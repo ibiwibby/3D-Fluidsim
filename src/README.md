@@ -76,14 +76,15 @@ mode for CSV output.
 
 ## Density disturbance and CSV output
 
-`make disturbance` or `--disturbance` initializes cell `(0,0)` at density **1.01**
+`make disturbance` or `--disturbance` initializes cell `(8,8)` at density **1.10**
 and every other cell at density **1**, all with zero velocity. It sets the bumped
 cell's nine populations to their local equilibrium weights times density, then
 runs collision and streaming on the GPU. This initial condition is distinct from
 the nonequilibrium fixture used by `--collision-check`.
 
-Defaults in `include/lbm/config.hpp` are `disturbance_steps = 100` and
-`density_increase = 0.01`. The mode uses the configured grid and relaxation time;
+Defaults in `include/lbm/config.hpp` are a 16 × 16 grid, `disturbance_steps = 100`,
+`disturbance_x = 8`, `disturbance_y = 8`, and `density_increase = 0.10`.
+Coordinates outside the configured grid are rejected. The mode uses the configured relaxation time;
 `--simulate` still uses its own `steps = 1000` and uniform rest initialization.
 
 The default output is `disturbance.csv` in the current working directory. An
@@ -100,13 +101,13 @@ X-forwarding is used. Copy the finished CSV from TACC to your Mac for plotting.
 The CSV header is `step,x,y,density,ux,uy`. Coordinates use x rightward and y
 upward; values are in lattice units. Rows are ordered by timestep, then by cell
 (`x + Nx*y`). Snapshots include **step 0 and every completed timestep** through
-the final step. With the defaults, there are 101 snapshots and 404 data rows,
+the final step. With the defaults, there are 101 snapshots and 25,856 data rows,
 plus the header. Zero disturbance steps saves only the initial snapshot.
 Floating-point values are written with round-trip double precision.
 
 Each snapshot is read from the current GPU buffer after any swap. Before writing,
 the program checks all populations and derived fields for finite values, positive
-density, and total mass against `Nx*Ny + density_increase` (default **4.01**),
+density, and total mass against `Nx*Ny + density_increase` (default **256.10**),
 using the configured relative-error tolerance. These checks allow density and
 velocity to evolve; they do not impose the rest-state equilibrium test. A failed
 check stops the run, leaving earlier completed snapshots for inspection. Output
@@ -116,13 +117,14 @@ requested snapshots were saved.
 On a periodic **2 × 2** grid, opposite directions reach the same neighbor. With
 this symmetric, zero-velocity initial condition, density redistributes while
 velocity can remain zero up to roundoff. A density heatmap shows the change;
-stationary velocity arrows are expected here. Use a larger grid later to show
-spatially resolved flow. Run `python scripts/animate.py src/disturbance.csv` from
+stationary velocity arrows were expected in the original checkpoint. The current
+16 × 16 default removes that directional ambiguity. Run `python scripts/animate.py src/disturbance.csv` from
 the project root after installing `scripts/requirements.txt` to save a GIF and
 initial/final PNGs in `results/`.
 
-For the default 2 × 2 grid, expect four density-1 cells with zero velocity and
-total mass 4 (up to roundoff). CUDA compilation and execution are deferred to TACC.
+For the current uniform-rest mode, expect 256 density-1 cells with zero velocity
+and total mass 256 (up to roundoff). The original 2 × 2 configuration passed on
+Vista; the new 16 × 16 disturbance settings still require execution verification.
 
 `collision-check` (executable option `--collision-check`) initializes the grid,
 downloads its populations, and perturbs cell 0: east and west each gain 0.01,

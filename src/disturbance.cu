@@ -74,13 +74,20 @@ void run_disturbance(Config config, const std::string& output_path) {
         throw std::invalid_argument("Require nonnegative disturbance steps/tolerance and a finite positive density increase");
     }
     config.steps = config.disturbance_steps;
+    if (config.disturbance_x < 0 || config.disturbance_x >= config.nx
+        || config.disturbance_y < 0 || config.disturbance_y >= config.ny) {
+        throw std::invalid_argument("Disturbance coordinates must lie inside the grid");
+    }
+    const std::size_t disturbance_cell =
+        static_cast<std::size_t>(config.disturbance_y) * config.nx + config.disturbance_x;
     Simulation simulation(config);
     simulation.initialize();
     auto initial = simulation.download();
     // Prescribed initial condition only; subsequent fluid updates remain on GPU.
     // At zero velocity, equilibrium is w_i * rho for every direction.
     for (int i = 0; i < Q; ++i) {
-        initial[population_index(i, 0, config.cells())] = weight(i) * (1.0 + config.density_increase);
+        initial[population_index(i, disturbance_cell, config.cells())] =
+            weight(i) * (1.0 + config.density_increase);
     }
     simulation.upload(initial);
     const Real expected_mass = static_cast<Real>(config.cells()) + config.density_increase;
@@ -91,7 +98,8 @@ void run_disturbance(Config config, const std::string& output_path) {
     output.open(output_path, std::ios::out | std::ios::trunc);
     output << std::setprecision(std::numeric_limits<Real>::max_digits10)
            << "step,x,y,density,ux,uy\n";
-    std::cout << "Density disturbance: rho(0,0)=" << 1.0 + config.density_increase
+    std::cout << "Density disturbance: rho(" << config.disturbance_x << ','
+              << config.disturbance_y << ")=" << 1.0 + config.density_increase
               << ", steps=" << config.disturbance_steps << ", output=" << output_path << '\n';
     write_snapshot(output, simulation.download(), config, 0, expected_mass);
     for (int step = 0; step < config.disturbance_steps; ++step) {
