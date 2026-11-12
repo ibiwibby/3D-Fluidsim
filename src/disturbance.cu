@@ -1,6 +1,7 @@
 #include "lbm/disturbance.hpp"
 #include "lbm/simulation.cuh"
 #include "lbm/d2q9.cuh"
+#include "lbm/initial_density.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -74,23 +75,29 @@ void run_disturbance(Config config, const std::string& output_path) {
         throw std::invalid_argument("Require nonnegative disturbance steps/tolerance and a finite positive density increase");
     }
     config.steps = config.disturbance_steps;
-    if (config.disturbance_x < 0 || config.disturbance_x >= config.nx
-        || config.disturbance_y < 0 || config.disturbance_y >= config.ny) {
-        throw std::invalid_argument("Disturbance coordinates must lie inside the grid");
+    for (const auto& center : config.disturbance_centers) {
+        if (center[0] < 0 || center[0] >= config.nx
+            || center[1] < 0 || center[1] >= config.ny) {
+            throw std::invalid_argument("Each disturbance cell must lie inside the grid");
+        }
     }
-    const std::size_t disturbance_cell =
-        static_cast<std::size_t>(config.disturbance_y) * config.nx + config.disturbance_x;
     Simulation simulation(config);
     simulation.initialize();
     auto initial = simulation.download();
     // Prescribed initial condition only; subsequent fluid updates remain on GPU.
     // At zero velocity, equilibrium is w_i * rho for every direction.
-    for (int i = 0; i < Q; ++i) {
-        initial[population_index(i, disturbance_cell, config.cells())] =
-            weight(i) * (1.0 + config.density_increase);
+    Real expected_mass = 0.0;
+    for (int y = 0; y < config.ny; ++y) {
+        for (int x = 0; x < config.nx; ++x) {
+            const Real rho = initial_density(x, y, config);
+            expected_mass += rho;
+            const auto cell = static_cast<std::size_t>(y) * config.nx + x;
+            for (int i = 0; i < Q; ++i) {
+                initial[population_index(i, cell, config.cells())] = weight(i) * rho;
+            }
+        }
     }
     simulation.upload(initial);
-    const Real expected_mass = static_cast<Real>(config.cells()) + config.density_increase;
 
     std::ofstream output;
     output.exceptions(std::ios::failbit | std::ios::badbit);
@@ -98,9 +105,11 @@ void run_disturbance(Config config, const std::string& output_path) {
     output.open(output_path, std::ios::out | std::ios::trunc);
     output << std::setprecision(std::numeric_limits<Real>::max_digits10)
            << "step,x,y,density,ux,uy\n";
-    std::cout << "Density disturbance: rho(" << config.disturbance_x << ','
-              << config.disturbance_y << ")=" << 1.0 + config.density_increase
+    std::cout << "Sharp density disturbance: selected-cell density=" << 1.0 + config.density_increase
               << ", steps=" << config.disturbance_steps << ", output=" << output_path << '\n';
+    for (const auto& center : config.disturbance_centers) {
+        std::cout << "  cell=(" << center[0] << ',' << center[1] << ")\n";
+    }
     write_snapshot(output, simulation.download(), config, 0, expected_mass);
     for (int step = 0; step < config.disturbance_steps; ++step) {
         simulation.step();

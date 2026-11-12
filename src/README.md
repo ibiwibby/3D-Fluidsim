@@ -1,5 +1,10 @@
 # CUDA checkpoint skeleton
 
+This repository's `src/` is the active source directory. Make future code changes
+here, not in the separate `FinalProject/src/` copy outside the repository.
+The current disturbance configuration is 64 × 64, 50 steps, and a sharp central 4 × 4
+square at density 5.00; all other cells start at 1.00.
+
 Framework for the 2 × 2 GPU D2Q9 checkpoint in [checkpoint_steps.md](checkpoint_steps.md).
 GPU initialization, BGK collision, and periodic pull streaming are implemented,
 with separate check modes and repeated rest-state checkpoint checks.
@@ -76,15 +81,20 @@ mode for CSV output.
 
 ## Density disturbance and CSV output
 
-`make disturbance` or `--disturbance` initializes cell `(8,8)` at density **1.10**
-and every other cell at density **1**, all with zero velocity. It sets the bumped
-cell's nine populations to their local equilibrium weights times density, then
-runs collision and streaming on the GPU. This initial condition is distinct from
-the nonequilibrium fixture used by `--collision-check`.
+`make disturbance` or `--disturbance` initializes all 16 cells with
+**x = 30..33 and y = 30..33** at density **5.00** on a **64 × 64** grid. Every other cell
+starts at density **1.00**. This forms a sharp central 4 × 4 square, with no
+initial gradient or smoothing. The square remains centered at (31.5,31.5). Density 5 is a strong disturbance,
+not a validated low-amplitude flow case; finite-state and mass checks alone do
+not establish physical accuracy. Initial velocity is zero. Each cell's populations
+are initialized to equilibrium weights times its density; subsequent collision
+and streaming evolve them on the GPU.
 
-Defaults in `include/lbm/config.hpp` are a 16 × 16 grid, `disturbance_steps = 100`,
-`disturbance_x = 8`, `disturbance_y = 8`, and `density_increase = 0.10`.
-Coordinates outside the configured grid are rejected. The mode uses the configured relaxation time;
+Defaults in `include/lbm/config.hpp` are `disturbance_steps = 50`, sixteen
+`disturbance_centers` (selected cell coordinates), and `density_increase = 4.0`.
+`include/lbm/initial_density.hpp` implements the exact coordinate selection.
+Coordinates must lie inside the grid; repeated coordinates do not stack increases.
+The mode uses the configured relaxation time;
 `--simulate` still uses its own `steps = 1000` and uniform rest initialization.
 
 The default output is `disturbance.csv` in the current working directory. An
@@ -101,13 +111,14 @@ X-forwarding is used. Copy the finished CSV from TACC to your Mac for plotting.
 The CSV header is `step,x,y,density,ux,uy`. Coordinates use x rightward and y
 upward; values are in lattice units. Rows are ordered by timestep, then by cell
 (`x + Nx*y`). Snapshots include **step 0 and every completed timestep** through
-the final step. With the defaults, there are 101 snapshots and 25,856 data rows,
+the final step. With the defaults, there are 51 snapshots and 208,896 data rows,
 plus the header. Zero disturbance steps saves only the initial snapshot.
 Floating-point values are written with round-trip double precision.
 
 Each snapshot is read from the current GPU buffer after any swap. Before writing,
 the program checks all populations and derived fields for finite values, positive
-density, and total mass against `Nx*Ny + density_increase` (default **256.10**),
+density, and total mass against the sum of the prescribed initial density field
+(**4160.00** for these defaults),
 using the configured relative-error tolerance. These checks allow density and
 velocity to evolve; they do not impose the rest-state equilibrium test. A failed
 check stops the run, leaving earlier completed snapshots for inspection. Output
@@ -118,13 +129,15 @@ On a periodic **2 × 2** grid, opposite directions reach the same neighbor. With
 this symmetric, zero-velocity initial condition, density redistributes while
 velocity can remain zero up to roundoff. A density heatmap shows the change;
 stationary velocity arrows were expected in the original checkpoint. The current
-16 × 16 default removes that directional ambiguity. Run `python scripts/animate.py src/disturbance.csv` from
+64 × 64 default removes that directional ambiguity. Run `python scripts/animate_density.py src/disturbance.csv` from
 the project root after installing `scripts/requirements.txt` to save a GIF and
-initial/final PNGs in `results/`.
+initial/final density-only PNGs in `results/64x64/`. The original `animate.py`
+remains available for density plus velocity. CSV output still includes `ux,uy`;
+the new density-only script does not parse or display them.
 
-For the current uniform-rest mode, expect 256 density-1 cells with zero velocity
-and total mass 256 (up to roundoff). The original 2 × 2 configuration passed on
-Vista; the new 16 × 16 disturbance settings still require execution verification.
+For the current uniform-rest mode, expect 4096 density-1 cells with zero velocity
+and total mass 4096 (up to roundoff). The original 2 × 2 configuration passed on
+Vista; the new 4 × 4 density-5 settings still require GPU execution verification.
 
 `collision-check` (executable option `--collision-check`) initializes the grid,
 downloads its populations, and perturbs cell 0: east and west each gain 0.01,

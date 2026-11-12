@@ -134,8 +134,8 @@ int main(int argc, char** argv) {
                       << "  --streaming-check  Check labels after one and two streams on 2x2\n"
                       << "  --simulate     Run from rest; check steps 0, 1, 2, 10, 1000 and final\n"
                       << "  --disturbance [output.csv]  Evolve density bump; save every step\n"
-                      << "Disturbance defaults: 100 steps, cell (8,8), density increase 0.10, disturbance.csv.\n"
-                      << "Defaults: 16x16 grid, double precision, 1000 simulation timesteps.\n"
+                      << "Disturbance defaults: 50 steps, central 4x4 square (x,y=30..33) at density 5.00, background 1.00, disturbance.csv.\n"
+                      << "Defaults: 64x64 grid, double precision, 1000 rest-test timesteps.\n"
                       << "Edit include/lbm/config.hpp to change defaults.\n";
             return 0;
         }

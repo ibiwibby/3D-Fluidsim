@@ -1,5 +1,31 @@
 # Local checkpoint visualization
 
+## Density-only 64 × 64 demonstration
+
+The new `animate_density.py` draws only a density heatmap. It ignores velocity
+columns while the CUDA output continues to contain `step,x,y,density,ux,uy`.
+After installing the requirements below, run from the repository root:
+
+```sh
+make -C src disturbance CUDA_ARCH=sm_86
+python scripts/animate_density.py src/disturbance.csv
+```
+
+Use `sm_90` on Vista. The simulation initializes all 16 cells with x and y in 30..33
+at density 5.00, with all other cells at 1.00, forming a sharp 4 × 4
+square in the center of a 64 × 64 grid. It evolves for 50 steps.
+Including step 0, that produces 51 frames. The separate uniform-rest validation
+mode still runs 1,000 steps.
+
+Outputs default to `results/64x64/disturbance_density.gif`,
+`disturbance_density_initial.png`, and `disturbance_density_final.png`. A fixed
+color scale is shared across frames. There are no arrows or velocity statistics.
+The script accepts `--output-dir`, `--fps`, and `--dpi`, and requires only the
+four CSV columns `step,x,y,density`; extra columns are ignored. Existing matching
+output files are overwritten. Earlier results elsewhere are preserved.
+
+## Original density-and-velocity visualization
+
 Run from the project root on your Mac:
 
 ```sh
