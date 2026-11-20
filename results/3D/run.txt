@@ -1,0 +1,8 @@
+D3Q19 BGK; periodic xyz; double; lattice units
+grid=32x32x32
+steps=50
+output_every=1
+tau=1
+bump=1
+bump_width=4
+density_increase=0.10000000000000001
