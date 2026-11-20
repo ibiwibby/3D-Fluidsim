@@ -2,7 +2,7 @@
 #include "config.hpp"
 #include <vector>
 namespace lbm {
-struct Fields { std::vector<Real> density, velocity; }; // velocity: xyz interleaved
+struct Fields { std::vector<Real> density, velocity, solid; }; // velocity: xyz interleaved
 class Simulation {
 public:
     explicit Simulation(Config config);

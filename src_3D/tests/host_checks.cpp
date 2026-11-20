@@ -27,6 +27,17 @@ int main() {
     double rho=0,mx=0,my=0,mz=0;
     for(int i=0;i<19;++i){double f=lbm::equilibrium(i,1.1,.02,-.01,.015);rho+=f;mx+=f*lbm::cx(i);my+=f*lbm::cy(i);mz+=f*lbm::cz(i);}
     assert(std::abs(rho-1.1)<1e-14&&std::abs(mx/rho-.02)<1e-14&&std::abs(my/rho+.01)<1e-14&&std::abs(mz/rho-.015)<1e-14);
+    for(int i=0;i<19;++i){const int o=lbm::opposite(i);assert(lbm::opposite(o)==i);
+        assert(lbm::cx(o)==-lbm::cx(i)&&lbm::cy(o)==-lbm::cy(i)&&lbm::cz(o)==-lbm::cz(i));}
+    double source_mass=0,source_momentum=0;
+    for(int i=0;i<19;++i){const auto f=lbm::forcing(i,.02,-.01,.015,1e-5,1.0);
+        source_mass+=f;source_momentum+=f*lbm::cx(i);}
+    assert(std::abs(source_mass)<1e-18&&std::abs(source_momentum-0.5e-5)<1e-18);
+    lbm::Config channel;channel.channel=true;channel.validate();
+    assert(lbm::solid_type(0,0,16,channel)==1&&lbm::solid_type(0,16,0,channel)==1);
+    assert(lbm::solid_type(15,15,15,channel)==2&&lbm::solid_type(0,15,15,channel)==0);
+    assert(lbm::solid_type(31,15,15,channel)==0);
+    channel.obstacle=false;assert(lbm::solid_type(15,15,15,channel)==0);
     lbm::Config c;c.validate();assert(c.cells()==32768&&c.bytes()==4980736);
     c.nx=3;c.ny=4;c.nz=5;c.bump_width=2;c.validate();
     lbm::Fields fields;fields.density.resize(c.cells());fields.velocity.resize(3*c.cells());

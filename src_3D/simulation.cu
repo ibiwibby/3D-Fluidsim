@@ -17,6 +17,10 @@ __global__ void initialize_kernel(Real* f,Config c,bool bump,Real ux,Real uy,Rea
     const int x0=(c.nx-c.bump_width)/2,y0=(c.ny-c.bump_width)/2,z0=(c.nz-c.bump_width)/2;
     const bool inside=x>=x0&&x<x0+c.bump_width&&y>=y0&&y<y0+c.bump_width&&z>=z0&&z<z0+c.bump_width;
     const Real rho=1+((bump&&inside)?c.density_increase:0);
+    const bool solid=solid_type(x,y,z,c)!=0;
+    // Counteract the half-force correction so the physical initial velocity is zero.
+    if(c.channel && !solid)ux-=0.5*c.force_x/rho;
+    if(solid)ux=uy=uz=0;
     for(int i=0;i<Q;++i) f[index(i,cell,n)]=equilibrium(i,rho,ux,uy,uz);
 }
 __device__ bool moments(const Real* f,std::size_t cell,std::size_t n,
@@ -32,13 +36,19 @@ __device__ bool moments(const Real* f,std::size_t cell,std::size_t n,
     if(!isfinite(ux*ux+uy*uy+uz*uz)) { invalid(cell); return false; }
     return true;
 }
-__global__ void collide_kernel(Real* f,std::size_t n,Real omega) {
+__global__ void collide_kernel(Real* f,Config c) {
     const auto cell=std::size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    const auto n=std::size_t(c.nx)*c.ny*c.nz;
     if(cell>=n)return;
+    const int x=cell%c.nx,y=(cell/c.nx)%c.ny,z=cell/(std::size_t(c.nx)*c.ny);
+    if(solid_type(x,y,z,c))return;
     Real local[Q],rho,ux,uy,uz;
     if(!moments(f,cell,n,local,rho,ux,uy,uz))return;
+    const Real omega=1/c.tau,fx=c.channel?c.force_x:0;
+    ux+=0.5*fx/rho;
     for(int i=0;i<Q;++i) {
-        local[i]-=omega*(local[i]-equilibrium(i,rho,ux,uy,uz));
+        local[i]+= -omega*(local[i]-equilibrium(i,rho,ux,uy,uz))
+                   + forcing(i,ux,uy,uz,fx,omega);
         if(!isfinite(local[i])) { invalid(cell);return; }
     }
     for(int i=0;i<Q;++i)f[index(i,cell,n)]=local[i];
@@ -49,16 +59,27 @@ __global__ void stream_kernel(const Real* f,Real* next,Config c) {
     const auto n=std::size_t(c.nx)*c.ny*c.nz;
     if(cell>=n)return;
     const int x=cell%c.nx,y=(cell/c.nx)%c.ny,z=cell/(std::size_t(c.nx)*c.ny);
+    if(solid_type(x,y,z,c)) {
+        for(int i=0;i<Q;++i)next[index(i,cell,n)]=f[index(i,cell,n)];
+        return;
+    }
     for(int i=0;i<Q;++i) {
         const auto source=cell_index(wrap(x-cx(i),c.nx),wrap(y-cy(i),c.ny),wrap(z-cz(i),c.nz),c.nx,c.ny);
-        next[index(i,cell,n)]=f[index(i,source,n)];
+        const int sx=source%c.nx,sy=(source/c.nx)%c.ny,sz=source/(std::size_t(c.nx)*c.ny);
+        // Halfway bounce-back: reflect the local outgoing opposite population.
+        next[index(i,cell,n)]=solid_type(sx,sy,sz,c)
+            ? f[index(opposite(i),cell,n)] : f[index(i,source,n)];
     }
 }
-__global__ void fields_kernel(const Real* f,Real* fields,std::size_t n) {
+__global__ void fields_kernel(const Real* f,Real* fields,Config c) {
     const auto cell=std::size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    const auto n=std::size_t(c.nx)*c.ny*c.nz;
     if(cell>=n)return;
     Real local[Q],rho,ux,uy,uz;
     if(!moments(f,cell,n,local,rho,ux,uy,uz))return;
+    const int x=cell%c.nx,y=(cell/c.nx)%c.ny,z=cell/(std::size_t(c.nx)*c.ny);
+    if(solid_type(x,y,z,c)) { rho=0;ux=uy=uz=0; }
+    else if(c.channel)ux+=0.5*c.force_x/rho;
     fields[cell]=rho;
     fields[n+3*cell]=ux;fields[n+3*cell+1]=uy;fields[n+3*cell+2]=uz;
 }
@@ -91,16 +112,19 @@ std::vector<Real> Simulation::download() const {
 }
 Fields Simulation::fields() const {
     if(!ready_)throw std::logic_error("No valid state");
-    fields_kernel<<<static_cast<unsigned>((c_.cells()+127)/128),128>>>(current_,fields_,c_.cells());finish();
+    fields_kernel<<<static_cast<unsigned>((c_.cells()+127)/128),128>>>(current_,fields_,c_);finish();
     Fields result;result.density.resize(c_.cells());result.velocity.resize(3*c_.cells());
     CUDA_CHECK(cudaMemcpy(result.density.data(),fields_,c_.cells()*sizeof(Real),cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(result.velocity.data(),fields_+c_.cells(),3*c_.cells()*sizeof(Real),cudaMemcpyDeviceToHost));
+    result.solid.resize(c_.cells());
+    for(int z=0;z<c_.nz;++z)for(int y=0;y<c_.ny;++y)for(int x=0;x<c_.nx;++x)
+        result.solid[cell_index(x,y,z,c_.nx,c_.ny)]=solid_type(x,y,z,c_);
     return result;
 }
 void Simulation::collide_only(){
     if(!ready_)throw std::logic_error("No valid state");
     ready_=false;
-    collide_kernel<<<static_cast<unsigned>((c_.cells()+127)/128),128>>>(current_,c_.cells(),1/c_.tau);
+    collide_kernel<<<static_cast<unsigned>((c_.cells()+127)/128),128>>>(current_,c_);
     finish();ready_=true;
 }
 void Simulation::stream_only(){

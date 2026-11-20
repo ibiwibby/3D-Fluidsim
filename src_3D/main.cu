@@ -60,6 +60,61 @@ void checks() {
         std::cout<<(moving?"Uniform 3D flow":"Rest state")<<" through 1000 steps: PASS\n";
     }
 }
+// Channel-specific tests supplement the periodic-lattice regression suite.
+void channel_checks() {
+    lbm::Config c;c.nx=12;c.ny=10;c.nz=8;c.obstacle_radius=1.5;
+    c.channel=true;c.force_x=0;c.validate();
+    lbm::Simulation sim(c);
+    std::vector<double> labels(c.populations());
+    for(std::size_t j=0;j<labels.size();++j)labels[j]=double(j+1);
+    sim.upload(labels);
+    std::vector<double> expected(labels.size(),-1);
+    // Forward routing with explicit reverse-direction search, independent of opposite().
+    for(int z=0;z<c.nz;++z)for(int y=0;y<c.ny;++y)for(int x=0;x<c.nx;++x) {
+        const auto cell=lbm::cell_index(x,y,z,c.nx,c.ny);
+        for(int i=0;i<19;++i) {
+            if(lbm::solid_type(x,y,z,c)){expected[i*c.cells()+cell]=labels[i*c.cells()+cell];continue;}
+            const int dx=(x+lbm::cx(i)+c.nx)%c.nx,dy=(y+lbm::cy(i)+c.ny)%c.ny,dz=(z+lbm::cz(i)+c.nz)%c.nz;
+            if(lbm::solid_type(dx,dy,dz,c)) {
+                int opposite=-1;
+                for(int j=0;j<19;++j)if(lbm::cx(j)==-lbm::cx(i)&&lbm::cy(j)==-lbm::cy(i)&&lbm::cz(j)==-lbm::cz(i))opposite=j;
+                require(opposite>=0,"Missing reverse direction");
+                expected[opposite*c.cells()+cell]=labels[i*c.cells()+cell];
+            }else expected[i*c.cells()+lbm::cell_index(dx,dy,dz,c.nx,c.ny)]=labels[i*c.cells()+cell];
+        }
+    }
+    sim.stream_only();require(sim.download()==expected,"Channel bounce-back routing mismatch");
+    sim.initialize();for(int step=0;step<100;++step)sim.step();
+    auto f=sim.fields();
+    for(std::size_t j=0;j<c.cells();++j){
+        require(std::abs(f.density[j]-(f.solid[j]?0:1))<c.tolerance,"Channel rest density mismatch");
+        for(int k=0;k<3;++k)require(std::abs(f.velocity[3*j+k])<c.tolerance,"Channel rest velocity mismatch");
+    }
+    c.force_x=1e-5;lbm::Simulation forced(c);forced.initialize();
+    const auto before=forced.download();forced.collide_only();const auto after=forced.download();
+    for(int z=0;z<c.nz;++z)for(int y=0;y<c.ny;++y)for(int x=0;x<c.nx;++x){
+        const auto cell=lbm::cell_index(x,y,z,c.nx,c.ny);
+        if(lbm::solid_type(x,y,z,c))continue;
+        double dm=0,dx=0,dy=0,dz=0;
+        for(int i=0;i<19;++i){double d=after[i*c.cells()+cell]-before[i*c.cells()+cell];
+            dm+=d;dx+=d*lbm::cx(i);dy+=d*lbm::cy(i);dz+=d*lbm::cz(i);}
+        require(std::abs(dm)<c.tolerance&&std::abs(dx-c.force_x)<c.tolerance
+            &&std::abs(dy)<c.tolerance&&std::abs(dz)<c.tolerance,"Force mass/momentum mismatch");
+    }
+    forced.initialize();double initial_mass=0;
+    for(double rho:forced.fields().density)initial_mass+=rho;
+    for(int step=0;step<200;++step)forced.step();
+    f=forced.fields();double mass=0,mean=0;
+    for(std::size_t j=0;j<c.cells();++j){
+        require(std::isfinite(f.density[j]),"Invalid channel density");
+        if(f.solid[j]){for(int k=0;k<3;++k)require(f.velocity[3*j+k]==0,"Moving solid");continue;}
+        require(f.density[j]>0,"Nonpositive channel density");mass+=f.density[j];
+        for(int k=0;k<3;++k)require(std::isfinite(f.velocity[3*j+k]),"Invalid channel velocity");
+        mean+=f.velocity[3*j];
+    }
+    require(std::abs(mass-initial_mass)/initial_mass<c.tolerance&&mean>0,"Channel mass or flow-direction failure");
+    std::cout<<"Channel reflection, zero-force rest, force moments and driven mass: PASS\n";
+}
 void run(lbm::Config c,const std::filesystem::path& directory,bool bump) {
     c.validate();
     // Avoid mixing new snapshots with old runs or silently replacing results.
@@ -68,29 +123,36 @@ void run(lbm::Config c,const std::filesystem::path& directory,bool bump) {
     std::filesystem::create_directories(directory);
     std::ofstream diagnostics;diagnostics.exceptions(std::ios::failbit|std::ios::badbit);
     diagnostics.open(directory/"diagnostics.csv");
-    diagnostics<<std::setprecision(17)<<"step,mass,relative_mass_error,min_density,max_density,max_speed\n";
+    diagnostics<<std::setprecision(17)<<"step,mass,relative_mass_error,min_density,max_density,max_speed,mean_ux,max_mach\n";
     std::ofstream metadata;metadata.exceptions(std::ios::failbit|std::ios::badbit);
     metadata.open(directory/"run.txt");
-    metadata<<std::setprecision(17)<<"D3Q19 BGK; periodic xyz; double; lattice units\n"
+    metadata<<std::setprecision(17)<<"D3Q19 BGK; double; lattice units\n"
+            <<"channel="<<c.channel<<"\nobstacle="<<c.obstacle<<"\nobstacle_radius="<<c.obstacle_radius<<"\nforce_x="<<(c.channel?c.force_x:0)<<"\nboundaries="<<(c.channel?"periodic x, bounce-back y/z walls and obstacle":"periodic xyz")<<"\n"
             <<"grid="<<c.nx<<'x'<<c.ny<<'x'<<c.nz<<"\nsteps="<<c.steps<<"\noutput_every="<<c.output_every
             <<"\ntau="<<c.tau<<"\nbump="<<bump<<"\nbump_width="<<c.bump_width<<"\ndensity_increase="<<c.density_increase<<'\n';metadata.close();
     lbm::Simulation sim(c);sim.initialize(bump);
-    const double expected_mass=c.cells()+(bump?double(c.bump_width)*c.bump_width*c.bump_width*c.density_increase:0);
+    std::size_t fluid_cells=0;
+    for(int z=0;z<c.nz;++z)for(int y=0;y<c.ny;++y)for(int x=0;x<c.nx;++x)
+        fluid_cells+=!lbm::solid_type(x,y,z,c);
+    const double expected_mass=fluid_cells+(bump?double(c.bump_width)*c.bump_width*c.bump_width*c.density_increase:0);
     std::vector<std::pair<int,std::string>> frames;
     int step=0;
     while(true) {
         // Validate fields each step, but only persist full fields at output intervals.
-        const auto f=sim.fields();double mass=0,minrho=1e300,maxrho=0,maxspeed=0;
+        const auto f=sim.fields();double mass=0,minrho=1e300,maxrho=0,maxspeed=0,sumux=0;
         for(std::size_t cell=0;cell<c.cells();++cell) {
+            if(f.solid[cell]!=0)continue;
             const double rho=f.density[cell],u=f.velocity[3*cell],v=f.velocity[3*cell+1],w=f.velocity[3*cell+2];
             const double speed=std::sqrt(u*u+v*v+w*w);
             require(std::isfinite(rho)&&rho>0&&std::isfinite(speed),"Invalid field at step "+std::to_string(step));
-            mass+=rho;minrho=std::min(minrho,rho);maxrho=std::max(maxrho,rho);maxspeed=std::max(maxspeed,speed);
+            sumux+=u;mass+=rho;minrho=std::min(minrho,rho);maxrho=std::max(maxrho,rho);maxspeed=std::max(maxspeed,speed);
         }
         const double error=std::abs(mass-expected_mass)/expected_mass;
         require(std::isfinite(mass)&&error<=c.tolerance,"Mass error at step "+std::to_string(step));
-        if(!bump)check_equilibrium(sim,c);
-        diagnostics<<step<<','<<mass<<','<<error<<','<<minrho<<','<<maxrho<<','<<maxspeed<<'\n';diagnostics.flush();
+        if(!bump&&!c.channel)check_equilibrium(sim,c);
+        const double mach=maxspeed*std::sqrt(3.0);
+        if(c.channel)require(mach<0.1,"Channel exceeded chosen low-Mach limit 0.1; reduce force");
+        diagnostics<<step<<','<<mass<<','<<error<<','<<minrho<<','<<maxrho<<','<<maxspeed<<','<<sumux/fluid_cells<<','<<mach<<'\n';diagnostics.flush();
         if(step%c.output_every==0||step==c.steps) {
             std::ostringstream name;name<<"flow_"<<std::setw(6)<<std::setfill('0')<<step<<".vti";
             lbm::write_vti(directory/name.str(),c,f,step);frames.emplace_back(step,name.str());
@@ -108,15 +170,18 @@ int main(int argc,char** argv) {
  try {
     const std::string mode=argc>1?argv[1]:"--help";
     if(mode=="--help") {
-        std::cout<<"D3Q19 CUDA: --device-info | --check | --rest | --disturbance\n"
-                 <<"Run options: --steps N --output-every N --output DIRECTORY\n"
+        std::cout<<"D3Q19 CUDA: --device-info | --check | --rest | --disturbance | --channel\n"
+                 <<"Run options: --steps N --output-every N --output DIRECTORY [--no-obstacle]\n"
                  <<"Default: 32x32x32, 50 steps, central 4^3 cube at rho=1.10, background=1.\n";return 0;
     }
-    require(mode=="--device-info"||mode=="--check"||mode=="--rest"||mode=="--disturbance","Unknown mode; use --help");
+    require(mode=="--device-info"||mode=="--check"||mode=="--rest"||mode=="--disturbance"||mode=="--channel","Unknown mode; use --help");
     lbm::Config c;std::filesystem::path output="output";
+    if(mode=="--channel"){c.channel=true;c.steps=3000;c.output_every=50;output="channel_output";}
     for(int i=2;i<argc;++i) {
-        require(mode=="--rest"||mode=="--disturbance","Options apply only to run modes");
-        const std::string option=argv[i];require(i+1<argc,"Missing option value");const std::string value=argv[++i];
+        require(mode=="--rest"||mode=="--disturbance"||mode=="--channel","Options apply only to run modes");
+        const std::string option=argv[i];
+        if(option=="--no-obstacle"){require(c.channel,"--no-obstacle requires --channel");c.obstacle=false;continue;}
+        require(i+1<argc,"Missing option value");const std::string value=argv[++i];
         if(option=="--steps")c.steps=integer(value);
         else if(option=="--output-every")c.output_every=integer(value);
         else if(option=="--output")output=value;
@@ -126,7 +191,7 @@ int main(int argc,char** argv) {
     CUDA_CHECK(cudaSetDevice(0));cudaDeviceProp prop{};CUDA_CHECK(cudaGetDeviceProperties(&prop,0));
     std::cout<<"GPU: "<<prop.name<<" compute capability "<<prop.major<<'.'<<prop.minor<<'\n';
     if(mode=="--device-info")return 0;
-    if(mode=="--check")checks();else run(c,output,mode=="--disturbance");
+    if(mode=="--check"){checks();channel_checks();}else run(c,output,mode=="--disturbance");
     return 0;
  }catch(const std::exception& e){std::cerr<<"D3Q19 failed: "<<e.what()<<'\n';return 1;}
 }

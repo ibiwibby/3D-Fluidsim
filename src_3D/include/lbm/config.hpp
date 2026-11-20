@@ -13,6 +13,10 @@ struct Config {
     int output_every = 1;
     Real tau = 1.0;
     Real tolerance = 1e-12;
+    bool channel = false;
+    bool obstacle = true;
+    Real obstacle_radius = 4.0;
+    Real force_x = 1e-5; // Constant force per unit volume, active only in channel mode.
     int bump_width = 4;
     Real density_increase = 0.10;
     std::size_t cells() const { return std::size_t(nx) * ny * nz; }
@@ -25,6 +29,11 @@ struct Config {
             || !std::isfinite(density_increase) || density_increase < 0
             || bump_width < 1 || bump_width > nx || bump_width > ny || bump_width > nz)
             throw std::invalid_argument("Invalid dimensions, steps, output interval, tau, tolerance or bump");
+        if (channel && (nx < 6 || ny < 6 || nz < 6 || !std::isfinite(force_x)
+            || !std::isfinite(obstacle_radius) || obstacle_radius <= 0
+            || obstacle_radius >= (nx-1)*0.5 || obstacle_radius >= (ny-3)*0.5
+            || obstacle_radius >= (nz-3)*0.5))
+            throw std::invalid_argument("Invalid channel dimensions, force or obstacle radius");
         std::size_t size = nx;
         const auto limit = std::numeric_limits<std::size_t>::max() / (Q * sizeof(Real));
         for (int dimension : {ny, nz}) {

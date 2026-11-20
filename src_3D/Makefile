@@ -12,6 +12,8 @@ else
 FLAGS += -O2 -lineinfo
 endif
 OUTPUT ?= ../results/3D
+CHANNEL_STEPS ?= 3000
+CHANNEL_OUTPUT ?= ../results/3D_channel
 STEPS ?= 50
 OUTPUT_EVERY ?= 1
 .PHONY: all help device-info check run disturbance rest memcheck host-check clean
@@ -44,3 +46,7 @@ host-check:
 clean:
 	rm -rf build
 -include $(OBJECTS:.o=.d)
+
+.PHONY: channel
+channel: $(TARGET)
+	./$(TARGET) --channel --steps $(CHANNEL_STEPS) --output-every 50 --output "$(CHANNEL_OUTPUT)"

@@ -8,7 +8,8 @@ visualization scripts are unchanged.
 - **32 × 32 × 32 lattice sites**, double precision, BGK collision, `tau = 1`.
 - D3Q19: one rest direction, six axial directions, twelve face diagonals; no body diagonals.
 - Weights: `1/3` at rest, `1/18` on axes, `1/36` on diagonals.
-- Periodic boundaries on x, y, and z. No solid walls, obstacles, forcing, or inlet/outlet yet.
+- Original rest/disturbance modes remain periodic on x, y, and z.
+- New `--channel` mode uses stationary walls, a central sphere, and sustained forcing (details below).
 - Default disturbance: a sharp central **4 × 4 × 4 cube**, indices **14..17** on
   each axis, at density **1.10**; background density **1.00**, velocity initially zero.
 - **50 timesteps**, snapshots from step 0 through step 50. Expected mass **32774.4**.
@@ -54,7 +55,7 @@ make -C src_3D run STEPS=100 OUTPUT_EVERY=5 OUTPUT=../results/3D_run2
     --steps 50 --output-every 2 --output results/3D_run3
 ```
 
-Run modes are `--device-info`, `--check`, `--rest`, and `--disturbance`.
+Run modes are `--device-info`, `--check`, `--rest`, `--disturbance`, and `--channel`.
 `--steps`, `--output-every`, and `--output` apply to rest/disturbance runs. Other
 parameters, including dimensions, bump width, and relaxation time, are in
 `include/lbm/config.hpp`; change them and rebuild. Negative steps and invalid
@@ -103,9 +104,9 @@ for later 128³/256³ runs. The implemented output is:
 
 | File | Contents |
 | --- | --- |
-| `flow_000000.vti`, etc. | Uncompressed binary Float64 density and 3-component velocity |
+| `flow_000000.vti`, etc. | Uncompressed binary Float64 density, 3-component velocity, and a solid mask |
 | `flow.pvd` | Snapshot filenames and lattice timestamps for a ParaView time series |
-| `diagnostics.csv` | One row per step: mass, relative mass error, min/max density, max speed |
+| `diagnostics.csv` | One row per step: mass, relative mass error, min/max density, max speed, mean x velocity, max Mach number |
 | `run.txt` | Dimensions, steps, output interval, tau, and initialization parameters |
 
 The VTI representation uses **point data at the LBM lattice-site coordinates**
@@ -116,11 +117,11 @@ UInt64 byte-count headers; a general-purpose XML parser cannot parse the raw
 payload as text, so use a VTK-aware reader. No VTK C++ library is required to build.
 The layout follows the [VTK XML format specification](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html).
 
-Each 32³ field snapshot has **1 MiB** of raw density/velocity data, plus a small
-header. Fifty-one snapshots use approximately **51 MiB**. The two GPU population
+Each 32³ field snapshot has **1.25 MiB** of raw density/velocity data, plus a small
+header. Fifty-one snapshots use approximately **63.75 MiB**. The two GPU population
 buffers total **9.5 MiB**, plus **1 MiB** for extracted fields, excluding runtime
-allocations. For comparison, double-precision field snapshots are 64 MiB at 128³
-and 512 MiB at 256³; save less frequently at those sizes.
+allocations. For comparison, with the solid mask, double-precision field snapshots are 80 MiB at 128³
+and 640 MiB at 256³; save less frequently at those sizes.
 
 Output alternatives:
 
@@ -178,3 +179,84 @@ component order, and PVD time metadata. Build-command dry runs also passed.
 need verification on the target environment.** No speedup, 3D physical benchmark,
 or CPU/GPU reference agreement is claimed yet. The method follows standard BGK
 LBM with the D3Q19 weights described in [this theory reference](https://docs.mstarcfd.com/17_Theory/theory-and-implementation.html).
+
+
+## Flow around a stationary obstacle
+
+The new `--channel` mode models a completely fluid-filled square duct, with flow
+in **+x** around a central radius-4 sphere on the 32³ grid. The sphere is centered
+at (15.5,15.5,15.5) and represented by solid lattice sites (a stair-step surface).
+The y=0/31 and z=0/31 planes are stationary walls. x is periodic, so this is a
+repeating channel segment driven by body force, not an inlet/outlet experiment
+or an isolated sphere in unbounded flow.
+
+The initial fluid density is 1 with zero physical velocity. Guo forcing supplies
+a constant force density `force_x=1e-5` only at fluid sites. Physical velocity
+includes the half-force correction `u=(sum(f_i*c_i)+F/2)/rho` in both collision
+and output. Initialization compensates for that correction so step 0 is at rest.
+See [Guo, Zheng and Shi (2002)](https://doi.org/10.1103/PhysRevE.65.046308)
+for the force discretization. The force source is
+`w_i*(1-omega/2)*[3*(c_ix-u_x)+9*(c_i·u)*c_ix]*F_x`.
+
+At fluid-solid links, halfway bounce-back returns the outgoing population to
+its opposite direction at the same fluid site. Solid sites are skipped by
+collision and do not supply populations to the fluid. Only fluid mass is counted.
+The wall lies halfway along each fluid-solid link; geometric accuracy of the
+stair-step sphere still needs refinement studies.
+
+From the repository root on A100:
+
+```sh
+make -C src_3D check CUDA_ARCH=sm_80
+make -C src_3D memcheck CUDA_ARCH=sm_80
+make -C src_3D channel CUDA_ARCH=sm_80
+```
+
+Use `sm_90` for Vista. The channel defaults to **3,000 steps**, writing every
+**50 steps** plus step 0 and the final state into **results/3D_channel/** (61
+snapshots). This is a starting transient run length, not a claim of convergence.
+A steady solution should be established by comparing later velocity fields or
+flow-rate history. The default tau=1 implies lattice viscosity 1/6.
+
+```sh
+make -C src_3D channel CHANNEL_STEPS=5000 CHANNEL_OUTPUT=../results/channel_long
+# Baseline without the obstacle, using the same walls and force:
+./src_3D/build/sm_80/debug-0/fluid3d --channel --no-obstacle \
+    --steps 3000 --output-every 50 --output results/channel_empty
+```
+
+`diagnostics.csv` reports fluid mass, density range, maximum speed, mean fluid
+x velocity, and maximum Mach number. The channel run rejects maximum Mach >=0.1
+as a chosen low-Mach guard; reduce `force_x` in config if necessary. Finite-state
+and mass checks remain active. These guards do not replace a physical reference
+benchmark. Neither vortex shedding nor high-Reynolds-number flow is promised.
+
+### ParaView view
+
+Open the output's `flow.pvd` with its VTI files alongside it. Each file contains:
+
+- `density` and `velocity`: fluid fields; set to **zero at solid sites** as output
+  placeholders, not physical fluid values. Exclude solids from density plots.
+- `solid`: **0=fluid, 1=wall, 2=sphere**. This is not liquid fraction.
+
+For a first view, create a central z slice (origin 15.5,15.5,15.5; normal 0,0,1)
+colored by **velocity magnitude**, with a fixed color range over time. On a second
+branch from the original dataset, apply Threshold to `solid`, retaining 2..2
+(and all-point matching if offered), then show it as a solid gray surface to
+identify the obstacle. A Threshold retaining 0..0 can isolate fluid for
+streamlines; place streamline seeds upstream near x=4 across the interior duct.
+The point-data mask can make thresholded surfaces offset by part of a lattice
+cell; the numerical geometry is defined by the site mask and halfway links.
+A volume view of density alone is not the clearest way to show this nearly
+constant-density flow. Use velocity slices/streamlines, with an Outline for context.
+
+### Added validation
+
+`--check` now also tests exact bounce-back routing against a forward-routing
+oracle, zero-force rest with walls and sphere, force mass/momentum increments,
+and a 200-step driven case for fluid mass conservation, positive mean x flow,
+finite fields, and zero output velocity in solids. Host tests verify opposite
+indices, force moments, geometry, and VTI solid-mask framing. Host tests passed
+locally; the **new CUDA channel tests and run still need execution on TACC**.
+A quantitative no-obstacle duct-flow benchmark and grid refinement are next;
+free-surface physics and liquid fraction are intentionally deferred.
