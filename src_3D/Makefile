@@ -14,6 +14,10 @@ endif
 OUTPUT ?= ../results/3D
 CHANNEL_STEPS ?= 3000
 CHANNEL_OUTPUT ?= ../results/3D_channel
+CHANNEL64_STEPS ?= 12000
+CHANNEL64_OUTPUT ?= ../results/3D_channel64
+CHANNEL64_FORCE ?= 1.25e-6
+CHANNEL64_BOUNDARIES ?=
 STEPS ?= 50
 OUTPUT_EVERY ?= 1
 .PHONY: all help device-info check run disturbance rest memcheck host-check clean
@@ -50,3 +54,7 @@ clean:
 .PHONY: channel
 channel: $(TARGET)
 	./$(TARGET) --channel --steps $(CHANNEL_STEPS) --output-every 50 --output "$(CHANNEL_OUTPUT)"
+
+.PHONY: channel64
+channel64: $(TARGET)
+	./$(TARGET) --channel --size 64 --radius 8 --force $(CHANNEL64_FORCE) --steps $(CHANNEL64_STEPS) --output-every 200 $(CHANNEL64_BOUNDARIES) --output "$(CHANNEL64_OUTPUT)"

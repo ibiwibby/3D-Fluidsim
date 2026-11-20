@@ -14,6 +14,7 @@ struct Config {
     Real tau = 1.0;
     Real tolerance = 1e-12;
     bool channel = false;
+    bool closed_ends = false;
     bool obstacle = true;
     Real obstacle_radius = 4.0;
     Real force_x = 1e-5; // Constant force per unit volume, active only in channel mode.
@@ -23,6 +24,7 @@ struct Config {
     std::size_t populations() const { return Q * cells(); }
     std::size_t bytes() const { return populations() * sizeof(Real); }
     void validate() const {
+        if(closed_ends&&!channel)throw std::invalid_argument("Closed ends require channel mode");
         if (nx < 1 || ny < 1 || nz < 1 || steps < 0 || output_every < 1
             || !std::isfinite(tau) || tau <= 0.5
             || !std::isfinite(tolerance) || tolerance <= 0

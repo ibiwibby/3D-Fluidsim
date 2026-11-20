@@ -61,9 +61,9 @@ void checks() {
     }
 }
 // Channel-specific tests supplement the periodic-lattice regression suite.
-void channel_checks() {
+void channel_checks(bool closed=false) {
     lbm::Config c;c.nx=12;c.ny=10;c.nz=8;c.obstacle_radius=1.5;
-    c.channel=true;c.force_x=0;c.validate();
+    c.channel=true;c.closed_ends=closed;c.force_x=0;c.validate();
     lbm::Simulation sim(c);
     std::vector<double> labels(c.populations());
     for(std::size_t j=0;j<labels.size();++j)labels[j]=double(j+1);
@@ -112,8 +112,9 @@ void channel_checks() {
         for(int k=0;k<3;++k)require(std::isfinite(f.velocity[3*j+k]),"Invalid channel velocity");
         mean+=f.velocity[3*j];
     }
-    require(std::abs(mass-initial_mass)/initial_mass<c.tolerance&&mean>0,"Channel mass or flow-direction failure");
-    std::cout<<"Channel reflection, zero-force rest, force moments and driven mass: PASS\n";
+    require(std::abs(mass-initial_mass)/initial_mass<c.tolerance,"Channel mass failure");
+    if(!closed)require(mean>0,"Channel flow-direction failure");
+    std::cout<<(closed?"Closed box":"Periodic channel")<<" reflection, zero-force rest, force moments and driven mass: PASS\n";
 }
 void run(lbm::Config c,const std::filesystem::path& directory,bool bump) {
     c.validate();
@@ -127,7 +128,7 @@ void run(lbm::Config c,const std::filesystem::path& directory,bool bump) {
     std::ofstream metadata;metadata.exceptions(std::ios::failbit|std::ios::badbit);
     metadata.open(directory/"run.txt");
     metadata<<std::setprecision(17)<<"D3Q19 BGK; double; lattice units\n"
-            <<"channel="<<c.channel<<"\nobstacle="<<c.obstacle<<"\nobstacle_radius="<<c.obstacle_radius<<"\nforce_x="<<(c.channel?c.force_x:0)<<"\nboundaries="<<(c.channel?"periodic x, bounce-back y/z walls and obstacle":"periodic xyz")<<"\n"
+            <<"channel="<<c.channel<<"\nclosed_ends="<<c.closed_ends<<"\nobstacle="<<c.obstacle<<"\nobstacle_radius="<<c.obstacle_radius<<"\nforce_x="<<(c.channel?c.force_x:0)<<"\nboundaries="<<(c.channel?(c.closed_ends?"bounce-back xyz walls and obstacle":"periodic x, bounce-back y/z walls and obstacle"):"periodic xyz")<<"\n"
             <<"grid="<<c.nx<<'x'<<c.ny<<'x'<<c.nz<<"\nsteps="<<c.steps<<"\noutput_every="<<c.output_every
             <<"\ntau="<<c.tau<<"\nbump="<<bump<<"\nbump_width="<<c.bump_width<<"\ndensity_increase="<<c.density_increase<<'\n';metadata.close();
     lbm::Simulation sim(c);sim.initialize(bump);
@@ -165,33 +166,42 @@ void run(lbm::Config c,const std::filesystem::path& directory,bool bump) {
     diagnostics.close();std::cout<<"Saved "<<frames.size()<<" snapshots to "<<directory<<"; checks passed.\n";
 }
 int integer(const std::string& text){std::size_t used=0;int v=std::stoi(text,&used);if(used!=text.size())throw std::invalid_argument("Invalid integer");return v;}
+double real(const std::string& text){std::size_t used=0;double v=std::stod(text,&used);if(used!=text.size()||!std::isfinite(v))throw std::invalid_argument("Invalid real number");return v;}
 }
 int main(int argc,char** argv) {
  try {
     const std::string mode=argc>1?argv[1]:"--help";
     if(mode=="--help") {
         std::cout<<"D3Q19 CUDA: --device-info | --check | --rest | --disturbance | --channel\n"
-                 <<"Run options: --steps N --output-every N --output DIRECTORY [--no-obstacle]\n"
+                 <<"Run options: --size N --steps N --output-every N --output DIRECTORY --tau VALUE\n"
+                 <<"Channel options: --force VALUE --radius VALUE --closed-ends --no-obstacle\n"
+                 <<"--size scales the default sphere radius to N/8; --radius overrides it.\n"
                  <<"Default: 32x32x32, 50 steps, central 4^3 cube at rho=1.10, background=1.\n";return 0;
     }
     require(mode=="--device-info"||mode=="--check"||mode=="--rest"||mode=="--disturbance"||mode=="--channel","Unknown mode; use --help");
-    lbm::Config c;std::filesystem::path output="output";
+    lbm::Config c;std::filesystem::path output="output";bool resized=false,radius_set=false;
     if(mode=="--channel"){c.channel=true;c.steps=3000;c.output_every=50;output="channel_output";}
     for(int i=2;i<argc;++i) {
         require(mode=="--rest"||mode=="--disturbance"||mode=="--channel","Options apply only to run modes");
         const std::string option=argv[i];
         if(option=="--no-obstacle"){require(c.channel,"--no-obstacle requires --channel");c.obstacle=false;continue;}
+        if(option=="--closed-ends"){require(c.channel,"--closed-ends requires --channel");c.closed_ends=true;continue;}
         require(i+1<argc,"Missing option value");const std::string value=argv[++i];
         if(option=="--steps")c.steps=integer(value);
+        else if(option=="--size"){c.nx=c.ny=c.nz=integer(value);resized=true;}
+        else if(option=="--radius"){require(c.channel,"--radius requires --channel");c.obstacle_radius=real(value);radius_set=true;}
+        else if(option=="--force"){require(c.channel,"--force requires --channel");c.force_x=real(value);}
+        else if(option=="--tau")c.tau=real(value);
         else if(option=="--output-every")c.output_every=integer(value);
         else if(option=="--output")output=value;
         else throw std::invalid_argument("Unknown option: "+option);
     }
+    if(resized&&!radius_set)c.obstacle_radius=c.nx/8.;
     c.validate();int count=0;CUDA_CHECK(cudaGetDeviceCount(&count));require(count>0,"No CUDA GPU visible");
     CUDA_CHECK(cudaSetDevice(0));cudaDeviceProp prop{};CUDA_CHECK(cudaGetDeviceProperties(&prop,0));
     std::cout<<"GPU: "<<prop.name<<" compute capability "<<prop.major<<'.'<<prop.minor<<'\n';
     if(mode=="--device-info")return 0;
-    if(mode=="--check"){checks();channel_checks();}else run(c,output,mode=="--disturbance");
+    if(mode=="--check"){checks();channel_checks();channel_checks(true);}else run(c,output,mode=="--disturbance");
     return 0;
  }catch(const std::exception& e){std::cerr<<"D3Q19 failed: "<<e.what()<<'\n';return 1;}
 }

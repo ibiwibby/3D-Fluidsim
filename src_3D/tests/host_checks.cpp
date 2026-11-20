@@ -38,6 +38,24 @@ int main() {
     assert(lbm::solid_type(15,15,15,channel)==2&&lbm::solid_type(0,15,15,channel)==0);
     assert(lbm::solid_type(31,15,15,channel)==0);
     channel.obstacle=false;assert(lbm::solid_type(15,15,15,channel)==0);
+    channel.closed_ends=true;
+    assert(lbm::solid_type(0,15,15,channel)==1&&lbm::solid_type(31,15,15,channel)==1);
+    assert(lbm::solid_type(15,0,15,channel)==1&&lbm::solid_type(15,31,15,channel)==1);
+    assert(lbm::solid_type(15,15,0,channel)==1&&lbm::solid_type(15,15,31,channel)==1);
+    // Every link out of the closed fluid domain lands on a wall before wrapping.
+    for(int z=1;z<31;z++)for(int y=1;y<31;y++)for(int x=1;x<31;x++)for(int q=1;q<19;q++){
+        int xx=x+lbm::cx(q),yy=y+lbm::cy(q),zz=z+lbm::cz(q);
+        if(xx==0||xx==31||yy==0||yy==31||zz==0||zz==31)
+            assert(lbm::solid_type(xx,yy,zz,channel)==1);
+    }
+    channel.nx=channel.ny=channel.nz=64;channel.obstacle=true;channel.obstacle_radius=8;
+    channel.force_x=1.25e-6;channel.steps=12000;channel.validate();
+    assert(channel.cells()==262144&&channel.bytes()==39845888);
+    assert(lbm::solid_type(31,31,31,channel)==2&&lbm::solid_type(0,31,31,channel)==1);
+    channel.channel=false;
+    bool invalid_boundary=false;
+    try{channel.validate();}catch(const std::invalid_argument&){invalid_boundary=true;}
+    assert(invalid_boundary);
     lbm::Config c;c.validate();assert(c.cells()==32768&&c.bytes()==4980736);
     c.nx=3;c.ny=4;c.nz=5;c.bump_width=2;c.validate();
     lbm::Fields fields;fields.density.resize(c.cells());fields.velocity.resize(3*c.cells());
