@@ -15,13 +15,19 @@ powershell -ExecutionPolicy Bypass -File .\src_3D\tacc\package.ps1 -Send -Remote
 The original 32-cubed modes remain available. Runtime options configure the
 same CUDA executable for a 64-cubed grid with a radius-8 sphere.
 
-The preset uses tau=1, force_x=1.25e-6, 12000 steps and a snapshot every
-200 steps, giving 61 VTI files plus the PVD timeline. The force is one
-eighth of the original 32-cubed force, and the step count is four times
-longer. This follows nominal diffusive refinement at fixed lattice
-viscosity and approximately preserves Reynolds number. The effective channel
-width and voxelized sphere change discretely, so verify convergence from
-the computed fields. This is an initial run length.
+The preset uses tau=1, force_x=1.25e-6, **600 steps with a snapshot every
+5 steps**, giving 121 VTI files plus the PVD timeline. This captures the early
+closed-box response; it is not a promise that either case reaches equilibrium.
+The previous 12000-step / every-200 recording skipped the strongest early
+motion (the uploaded closed run peaked at step 54).
+
+The force remains one eighth of the original 32-cubed force. Only recording
+length and sampling cadence changed; solver physics and boundaries are unchanged.
+Override either setting when needed, for example on an allocated Vista GPU:
+
+```bash
+CHANNEL64_STEPS=600 CHANNEL64_OUTPUT_EVERY=5 CUDA_ARCH=sm_90 bash tacc/run64.sh closed
+```
 
 Two boundary choices are available.
 
@@ -33,7 +39,7 @@ Two boundary choices are available.
 
 Each run uses about 76 MiB for its two population buffers, plus 8 MiB for
 GPU field extraction. A snapshot has about 10 MiB of raw Float64 field
-data including the solid mask. Allow roughly 610 MiB per recording.
+data including the solid mask. Allow roughly 1.2 GiB per recording (2.4 GiB for both).
 
 ## Send from Windows
 
@@ -81,7 +87,7 @@ CUDA module is unavailable, select an installed version with
 `module spider cuda`. The run script compiles for A100 (`sm_80`),
 runs the GPU regression suite, then runs both 64-cubed cases in sequence.
 It exits on failed tests or failed simulations. The printed output paths
-and sibling logs identify each run by job ID, boundary mode and timestamp.
+and sibling logs (including stderr) identify each run by job ID, boundary mode and timestamp.
 Use `periodic` or `closed` instead of `both` to run one case.
 
 The new closed-end GPU tests require execution on the target GPU.
@@ -102,7 +108,7 @@ make -C src_3D channel64 CUDA_ARCH=sm_80 CHANNEL64_BOUNDARIES=--closed-ends CHAN
 Or pass the options directly.
 
 ```bash
-./src_3D/build/sm_80/debug-0/fluid3d --channel --size 64 --radius 8 --force 1.25e-6 --closed-ends --steps 12000 --output-every 200 --output results/closed64
+./src_3D/build/sm_80/debug-0/fluid3d --channel --size 64 --radius 8 --force 1.25e-6 --closed-ends --steps 600 --output-every 5 --output results/closed64
 ```
 
 ## Bring the results back
@@ -112,8 +118,9 @@ directory printed by the run script.
 
 ```powershell
 scp -r lonestar6:REMOTE_OUTPUT_DIRECTORY results/
-python free_surface_tank/src/import_vtk.py results/LOCAL_RUN_FOLDER/flow.pvd free_surface_tank/vtk_64.html
-Start-Process free_surface_tank/vtk_64.html
+python -m pip install -r renderer/requirements.txt
+python renderer/src/import_vtk.py results/LOCAL_RUN_FOLDER/flow.pvd renderer/output/vtk_64.html
+Start-Process renderer/output/vtk_64.html
 ```
 
 Check diagnostics.csv for fluid mass error, density, maximum Mach number and

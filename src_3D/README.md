@@ -4,6 +4,7 @@ The 64-cubed preset and optional closed x walls are documented in
 [tacc/README.md](tacc/README.md). Use `make -C src_3D channel64`, or select
 `--channel --size 64 --closed-ends` through the runtime options.
 The TACC package and run scripts are in `tacc/`.
+Open saved VTI/PVD data with the [browser renderer](../renderer/README.md).
 
 This is a separate 3D implementation. The existing `src/` 2D solver and its
 visualization scripts are unchanged.

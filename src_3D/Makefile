@@ -14,7 +14,8 @@ endif
 OUTPUT ?= ../results/3D
 CHANNEL_STEPS ?= 3000
 CHANNEL_OUTPUT ?= ../results/3D_channel
-CHANNEL64_STEPS ?= 12000
+CHANNEL64_STEPS ?= 600
+CHANNEL64_OUTPUT_EVERY ?= 5
 CHANNEL64_OUTPUT ?= ../results/3D_channel64
 CHANNEL64_FORCE ?= 1.25e-6
 CHANNEL64_BOUNDARIES ?=
@@ -57,4 +58,4 @@ channel: $(TARGET)
 
 .PHONY: channel64
 channel64: $(TARGET)
-	./$(TARGET) --channel --size 64 --radius 8 --force $(CHANNEL64_FORCE) --steps $(CHANNEL64_STEPS) --output-every 200 $(CHANNEL64_BOUNDARIES) --output "$(CHANNEL64_OUTPUT)"
+	./$(TARGET) --channel --size 64 --radius 8 --force $(CHANNEL64_FORCE) --steps $(CHANNEL64_STEPS) --output-every $(CHANNEL64_OUTPUT_EVERY) $(CHANNEL64_BOUNDARIES) --output "$(CHANNEL64_OUTPUT)"

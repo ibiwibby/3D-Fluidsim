@@ -12,7 +12,8 @@ case "$choice" in periodic|closed|both) ;; *)
     exit 1 ;;
 esac
 arch="${CUDA_ARCH:-sm_80}"
-steps="${CHANNEL64_STEPS:-12000}"
+steps="${CHANNEL64_STEPS:-600}"
+output_every="${CHANNEL64_OUTPUT_EVERY:-5}"
 command -v nvcc >/dev/null || { echo "Load the site's CUDA module first." >&2; exit 1; }
 make CUDA_ARCH="$arch" DEBUG=0 all
 binary="./build/$arch/debug-0/fluid3d"
@@ -26,7 +27,7 @@ for boundary in periodic closed; do
     output="../results/channel64_${boundary}_${SLURM_JOB_ID}_$stamp"
     mkdir -p "$(dirname "$output")"
     "$binary" --channel --size 64 --radius 8 --force 1.25e-6 \
-        --steps "$steps" --output-every 200 "${options[@]}" --output "$output" \
-        | tee "${output}.log"
+        --steps "$steps" --output-every "$output_every" "${options[@]}" --output "$output" \
+        2>&1 | tee "${output}.log"
     echo "Completed output: $(realpath "$output")"
 done

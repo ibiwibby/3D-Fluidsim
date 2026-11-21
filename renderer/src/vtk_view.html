@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D3Q19 field viewer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0c1c25;color:#e0eeef;font:15px "Segoe UI",sans-serif}
+main{max-width:1400px;margin:auto;padding:24px}
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-family:Georgia,serif;font-size:36px;font-weight:normal;margin:0}
+#meta,footer{color:#a1bcc5;font-size:13px}
+section{position:relative;margin:20px 0;border:1px solid #39515b;border-radius:10px;overflow:hidden}
+canvas{display:block;width:100%;height:65vh;min-height:340px;touch-action:none;cursor:grab}
+.controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px;background:#142d38}
+button,select{background:#1c3945;color:inherit;border:1px solid #63808b;padding:8px;border-radius:5px}
+label{display:flex;align-items:center;gap:8px;font-size:13px}
+input[type=range]{accent-color:#9cd8ce}
+#seek{flex:1;min-width:150px}
+output{font:13px Consolas,monospace}
+#status{position:absolute;top:30%;left:20px;background:#163743;padding:16px}
+#key{height:8px;width:160px;background:linear-gradient(90deg,#284bba,#8bd6db,#f8d38a,#cd482a);border-radius:4px}
+footer{display:flex;gap:20px;justify-content:space-between;flex-wrap:wrap}
+[hidden]{display:none!important}
+</style>
+</head>
+<body><main>
+<header><h1>D3Q19 field viewer</h1><span id="meta"></span></header>
+<p id="runNote" hidden></p>
+<section>
+<canvas id="view" aria-label="Interactive three dimensional simulation fields"></canvas>
+<div id="status" role="status">Loading VTK snapshots…</div>
+<div class="controls">
+<label>Field <select id="field"><option value="density">Density</option><option value="speed">Speed</option></select></label>
+<label>View <select id="mode"><option value="volume">Volume</option><option value="slice">Slice</option></select></label>
+<label id="opacityLabel">Opacity <input id="opacity" type="range" min="1" max="20" value="8"></label>
+<label>Slice <select id="plane"><option value="z">XY</option><option value="y">XZ</option><option value="x">YZ</option></select></label>
+<input id="slice" type="range" min="0" max="100" value="50" aria-label="Slice position">
+<label><input id="vectors" type="checkbox">Velocity arrows</label>
+<label id="solidLabel" hidden><input id="solids" type="checkbox" checked>Walls & obstacle</label>
+<label id="tracerLabel" hidden><input id="tracers" type="checkbox" checked>Flow tracers</label>
+<label id="travelLabel" hidden>Tracer travel <select id="tracerRate"><option value="1">1×</option><option value="5">5×</option><option selected value="10">10×</option></select></label>
+<label><input id="adaptive" type="checkbox" checked>Scale colors per frame</label>
+<button id="reset">Reset camera</button>
+</div>
+<div class="controls">
+<button id="play">Pause</button>
+<input id="seek" type="range" min="0" value="0" step="any" aria-label="Simulation time">
+<select id="rate" aria-label="Playback rate"><option value="0.5">0.5×</option><option selected value="1">1×</option><option value="2">2×</option></select>
+<output id="step"></output>
+</div>
+</section>
+<footer><div><div id="key"></div><span id="range"></span></div><span id="description">Point fields imported from VTI · Drag to orbit · Scroll to zoom</span></footer>
+</main>
+<script>/* THREE */</script>
+<script>/* SURFACE */</script>
+<script>/* TRACERS */</script>
+<script>
+const DATA=/* DATA */;
+const el=id=>document.getElementById(id);
+
+async function decode(s){
+  const bytes=Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return new Float32Array(await new Response(stream).arrayBuffer());
+}
+
+async function start(){
+  const solidCache=new Map();
+  function decodeSolid(s){
+    if(!s)return null;
+    if(!solidCache.has(s))solidCache.set(s,decode(s));
+    return solidCache.get(s);
+  }
+  const frames=await Promise.all(DATA.frames.map(async f=>({
+    time:f.time,density:await decode(f.density),velocity:await decode(f.velocity),
+    fill:f.fill?await decode(f.fill):null,solid:await decodeSolid(f.solid)
+  })));
+  const {shape,spacing}=DATA.grid,[nx,ny,nz]=shape;
+  const size=shape.map((n,i)=>(n-1)*spacing[i]),span=Math.max(...size);
+  const canvas=el('view'),renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+  renderer.outputColorSpace=THREE.SRGBColorSpace;
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x0e2531);
+  const camera=new THREE.PerspectiveCamera(42,1,span/1000,span*30);
+  const box=new THREE.BoxGeometry(size[0],size[2],size[1]);
+  scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(box),new THREE.LineBasicMaterial({color:0x557887})));
+  box.dispose();
+  scene.add(new THREE.HemisphereLight(0xe6faff,0x30526b,2));
+  const sun=new THREE.DirectionalLight(0xffffff,3);sun.position.set(span,span*2,span);scene.add(sun);
+
+  const textureSize=Math.max(nx,ny,nz);
+  const pixels=new Uint8Array(textureSize*textureSize*4);
+  const texture=new THREE.DataTexture(pixels,textureSize,textureSize,THREE.RGBAFormat);
+  texture.magFilter=texture.minFilter=THREE.LinearFilter;texture.needsUpdate=true;
+  const plane=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({map:texture,side:THREE.DoubleSide,alphaTest:.5}));
+  scene.add(plane);
+  const arrows=new THREE.Group();scene.add(arrows);
+  for(let i=0;i<144;i++){
+    const arrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(),1,0xffffff);
+    arrows.add(arrow);
+  }
+
+  if(!renderer.capabilities.isWebGL2)throw Error('Volume rendering requires WebGL 2. Open this file in a current Chrome or Edge.');
+  const volumeBytes=new Uint8Array(nx*ny*nz);
+  const volumeTexture=new THREE.Data3DTexture(volumeBytes,nx,ny,nz);
+  volumeTexture.format=THREE.RedFormat;volumeTexture.type=THREE.UnsignedByteType;
+  volumeTexture.minFilter=volumeTexture.magFilter=THREE.LinearFilter;
+  volumeTexture.unpackAlignment=1;volumeTexture.needsUpdate=true;
+  const solidBytes=new Uint8Array(nx*ny*nz);
+  const solidTexture=new THREE.Data3DTexture(solidBytes,nx,ny,nz);
+  solidTexture.format=THREE.RedFormat;solidTexture.type=THREE.UnsignedByteType;
+  solidTexture.minFilter=solidTexture.magFilter=THREE.NearestFilter;
+  solidTexture.unpackAlignment=1;solidTexture.needsUpdate=true;
+  const solidGroup=new THREE.Group();scene.add(solidGroup);
+  let solidFrame=null;
+  function updateSolids(mask){
+    if(mask===solidFrame)return;
+    solidFrame=mask;
+    for(const child of [...solidGroup.children]){
+      solidGroup.remove(child);child.geometry.dispose();child.material.dispose();child.dispose();
+    }
+    solidBytes.fill(0);
+    if(mask){
+      const matrix=new THREE.Matrix4();
+      for(let type=1;type<=2;type++){
+        let count=0;for(const v of mask)if(v===type)count++;
+        if(!count)continue;
+        const material=new THREE.MeshStandardMaterial({color:type===1?0x87bcc9:0xc5a071,
+          transparent:type===1,opacity:type===1?.045:1,depthWrite:type!==1,roughness:.45});
+        const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(spacing[0],spacing[2],spacing[1]),material,count);
+        let index=0;
+        for(let c=0;c<mask.length;c++)if(mask[c]===type){
+          const x=c%nx,y=Math.floor(c/nx)%ny,z=Math.floor(c/(nx*ny));
+          const p=position(x,y,z);matrix.makeTranslation(p.x,p.y,p.z);
+          mesh.setMatrixAt(index++,matrix);
+        }
+        mesh.instanceMatrix.needsUpdate=true;solidGroup.add(mesh);
+      }
+      for(let c=0;c<mask.length;c++)solidBytes[c]=mask[c];
+    }
+    solidTexture.needsUpdate=true;
+  }
+  const volumeMaterial=new THREE.ShaderMaterial({
+    glslVersion:THREE.GLSL3,side:THREE.BackSide,transparent:true,depthWrite:false,depthTest:false,
+    uniforms:{
+      field:{value:volumeTexture},halfSize:{value:new THREE.Vector3(size[0]/2,size[2]/2,size[1]/2)},
+      grid:{value:new THREE.Vector3(nx,ny,nz)},limits:{value:new THREE.Vector2(0,1)},
+      reference:{value:1},strength:{value:8},stepSize:{value:span/192},
+      solidField:{value:solidTexture},showSolids:{value:true}
+    },
+    vertexShader:`out vec3 world;
+      void main(){world=(modelMatrix*vec4(position,1.)).xyz;gl_Position=projectionMatrix*viewMatrix*vec4(world,1.);}`,
+    fragmentShader:`precision highp float;precision highp sampler3D;
+      uniform sampler3D field,solidField;uniform bool showSolids;uniform vec3 halfSize,grid;uniform vec2 limits;
+      uniform float reference,strength,stepSize;in vec3 world;out vec4 result;
+      vec3 palette(float v){
+        return v<0.?mix(vec3(.16,.36,.75),vec3(.40,.82,1.),clamp(-v,0.,1.)):
+          mix(vec3(1.,.63,.16),vec3(1.,.22,.07),clamp(v,0.,1.));
+      }
+      void main(){
+        vec3 ray=normalize(world-cameraPosition);
+        vec3 safeRay=mix(vec3(1.e-7),ray,greaterThan(abs(ray),vec3(1.e-7)));
+        vec3 a=(-halfSize-cameraPosition)/safeRay,b=(halfSize-cameraPosition)/safeRay;
+        vec3 entry=min(a,b),exit=max(a,b);
+        float near=max(0.,max(entry.x,max(entry.y,entry.z)));
+        float far=min(exit.x,min(exit.y,exit.z));
+        if(far<=near)discard;
+        float magnitude=max(1.e-8,max(abs(limits.x-reference),abs(limits.y-reference)));
+        vec4 accumulated=vec4(0.);
+        for(int i=0;i<384;i++){
+          float distance=near+(float(i)+.5)*stepSize;
+          if(distance>far||accumulated.a>.985)break;
+          vec3 p=(cameraPosition+ray*distance+halfSize)/(2.*halfSize);
+          vec3 uv=p.xzy;
+          uv=(uv*(grid-1.)+.5)/grid;
+          float solid=texture(solidField,uv).r*255.;
+          if(solid>1.5&&showSolids)break;
+          if(solid>.5)continue;
+          float value=mix(limits.x,limits.y,texture(field,uv).r);
+          float signal=(value-reference)/magnitude;
+          float weight=smoothstep(.035,.14,abs(signal))*abs(signal);
+          float alpha=1.-exp(-strength*weight*stepSize/(2.*max(halfSize.x,max(halfSize.y,halfSize.z))));
+          accumulated.rgb+=(1.-accumulated.a)*alpha*palette(signal);
+          accumulated.a+=(1.-accumulated.a)*alpha;
+        }
+        if(accumulated.a<.001)discard;
+        result=vec4(accumulated.rgb/accumulated.a,accumulated.a);
+        result=linearToOutputTexel(result);
+      }`
+  });
+  const volumeMesh=new THREE.Mesh(new THREE.BoxGeometry(size[0],size[2],size[1]),volumeMaterial);
+  scene.add(volumeMesh);
+  let volumeKey='';
+  const tracers=DATA.hasSolids?new VelocityTracers(THREE,shape,spacing):null;
+  if(tracers){scene.add(tracers.group);tracers.group.renderOrder=1;tracers.reset(frames[0].solid);}
+
+  let surface=null;
+  if(DATA.fillField){
+    const cubes=[];
+    for(let z=0;z<nz-1;z++)for(let y=0;y<ny-1;y++)for(let x=0;x<nx-1;x++)cubes.push(x+nx*(y+ny*z));
+    surface=new VolumeReplay({meta:{nx,ny,nz},steps:[0]},new Int32Array(cubes),
+      new Uint8Array(nx*ny*nz),new Int16Array(),new Int16Array(),
+      new THREE.MeshPhysicalMaterial({color:0x72c5d6,roughness:.13,metalness:.05,transparent:true,opacity:.8}));
+    surface.mesh.scale.set(spacing[0],spacing[2],spacing[1]);
+    surface.mesh.position.y=-size[2]/2;scene.add(surface.mesh);
+    el('field').add(new Option('Liquid surface','fill'));
+    el('field').value='fill';
+  }
+
+  let theta=.65,phi=.85,zoom=1,drag=null,playing=true,time=frames[0].time,previous=0,dirty=true;
+  const first=time,last=frames[frames.length-1].time;
+  if(DATA.hasSolids){
+    el('solidLabel').hidden=false;el('field').value='speed';el('vectors').checked=false;
+    el('tracerLabel').hidden=el('travelLabel').hidden=false;
+    el('opacity').value=2;
+    time=first+.1*(last-first);
+  }
+  if(DATA.label)document.querySelector('h1').textContent=DATA.label;
+  if(DATA.closedEnds){
+    time=first;el('adaptive').checked=false;
+    el('runNote').hidden=false;
+    el('runNote').textContent='Closed walls reflect the initial response. Continuous forcing builds a pressure gradient and the flow settles toward rest.';
+  }
+  if(DATA.partial){
+    el('runNote').hidden=false;
+    el('runNote').textContent+=' Partial recording — last saved step '+last+' of '+DATA.requestedSteps+' requested.';
+  }
+  el('seek').min=first;el('seek').max=last;el('seek').disabled=frames.length===1;
+  el('meta').textContent=shape.join(' × ')+' · '+frames.length+' VTK snapshots';
+  el('status').hidden=true;
+  const colorStops=[new THREE.Color('#284bba'),new THREE.Color('#8bd6db'),new THREE.Color('#f8d38a'),new THREE.Color('#cd482a')];
+  function color(t){
+    const at=Math.max(0,Math.min(.999999,t))*3,i=Math.floor(at);
+    return colorStops[i].clone().lerp(colorStops[i+1],at-i);
+  }
+  function position(x,y,z){
+    return new THREE.Vector3(x*spacing[0]-size[0]/2,z*spacing[2]-size[2]/2,y*spacing[1]-size[1]/2);
+  }
+  function update(tracerDt=0){
+    let k=0;while(k<frames.length-2&&frames[k+1].time<time)k++;
+    const a=frames[k],b=frames[Math.min(k+1,frames.length-1)];
+    const mix=b.time===a.time?0:(time-a.time)/(b.time-a.time);
+    const sample=(key,i)=>a[key][i]+mix*(b[key][i]-a[key][i]);
+    const mask=a.solid,fluid=c=>!mask||mask[c]===0;
+    updateSolids(mask);
+    if(tracers){
+      tracers.group.visible=el('tracers').checked;
+      if(tracers.group.visible)tracers.advance(tracerDt*Number(el('tracerRate').value),sample,mask,DATA.ranges.speed[1]);
+      canvas.dataset.tracerTravel=tracers.travel;
+    }
+    solidGroup.visible=el('solids').checked;
+    volumeMaterial.uniforms.showSolids.value=el('solids').checked;
+    const field=el('field').value,liquid=field==='fill';
+    const volume=el('mode').value==='volume'&&!liquid;
+    plane.visible=!liquid&&!volume;
+    volumeMesh.visible=volume;el('mode').disabled=liquid;el('opacityLabel').hidden=!volume;
+    if(surface)surface.mesh.visible=liquid;
+    arrows.visible=el('vectors').checked&&!liquid;
+    el('plane').disabled=el('slice').disabled=liquid||(volume&&!el('vectors').checked);
+    el('adaptive').disabled=liquid;
+    const axis=el('plane').value;
+    const dims=axis==='z'?[nx,ny,nz]:axis==='y'?[nx,nz,ny]:[ny,nz,nx];
+    const slice=Math.round(Number(el('slice').value)/100*(dims[2]-1));
+    const values=[],sites=[];
+    for(let j=0;j<dims[1];j++)for(let i=0;i<dims[0];i++){
+      const [x,y,z]=axis==='z'?[i,j,slice]:axis==='y'?[i,slice,j]:[slice,i,j];
+      const c=x+nx*(y+ny*z);
+      const ux=sample('velocity',3*c),uy=sample('velocity',3*c+1),uz=sample('velocity',3*c+2);
+      values.push(field==='density'?sample('density',c):Math.hypot(ux,uy,uz));
+      sites.push([x,y,z,ux,uy,uz]);
+    }
+    let [lo,hi]=DATA.ranges[field==='density'?'density':'speed'];
+    if(el('adaptive').checked){
+      lo=Infinity;hi=-Infinity;
+      for(let i=0;i<values.length;i++){
+        const [x,y,z]=sites[i];if(!fluid(x+nx*(y+ny*z)))continue;
+        lo=Math.min(lo,values[i]);hi=Math.max(hi,values[i]);
+      }
+      if(!Number.isFinite(lo)){lo=0;hi=0;}
+    }
+    if(volume){
+      const key=[time,field,el('adaptive').checked].join('/');
+      if(key!==volumeKey){
+        const full=new Float32Array(volumeBytes.length);
+        let minimum=Infinity,maximum=-Infinity;
+        for(let c=0;c<full.length;c++){
+          const v=field==='density'?sample('density',c):Math.hypot(sample('velocity',3*c),sample('velocity',3*c+1),sample('velocity',3*c+2));
+          full[c]=v;
+          if(fluid(c)){minimum=Math.min(minimum,v);maximum=Math.max(maximum,v);}
+        }
+        if(el('adaptive').checked){lo=minimum;hi=maximum;}
+        for(let c=0;c<full.length;c++){
+          const value=fluid(c)?full[c]:(field==='density'?1:0);
+          volumeBytes[c]=Math.round(255*Math.max(0,Math.min(1,(value-lo)/Math.max(1e-12,hi-lo))));
+        }
+        volumeMaterial.uniforms.limits.value.set(lo,hi);
+        volumeTexture.needsUpdate=true;volumeKey=key;
+      }else{
+        lo=volumeMaterial.uniforms.limits.value.x;hi=volumeMaterial.uniforms.limits.value.y;
+      }
+      volumeMaterial.uniforms.reference.value=field==='density'?1:0;
+      volumeMaterial.uniforms.strength.value=Number(el('opacity').value);
+    }
+    for(let y=0;y<textureSize;y++)for(let x=0;x<textureSize;x++){
+      const i=Math.min(dims[0]-1,Math.floor(x*dims[0]/textureSize));
+      const j=Math.min(dims[1]-1,Math.floor(y*dims[1]/textureSize));
+      const c=color((values[j*dims[0]+i]-lo)/Math.max(1e-12,hi-lo)),offset=4*(y*textureSize+x);
+      pixels[offset]=Math.round(255*c.r);pixels[offset+1]=Math.round(255*c.g);pixels[offset+2]=Math.round(255*c.b);pixels[offset+3]=255;
+      const [sx,sy,sz]=sites[j*dims[0]+i];
+      if(!fluid(sx+nx*(sy+ny*sz)))pixels[offset+3]=0;
+    }
+    texture.needsUpdate=true;
+    plane.rotation.set(0,0,0);
+    if(axis==='z'){plane.scale.set(size[0],size[1],1);plane.rotation.x=Math.PI/2;plane.position.copy(position(0,0,slice));plane.position.x=plane.position.z=0;}
+    if(axis==='y'){plane.scale.set(size[0],size[2],1);plane.position.copy(position(0,slice,0));plane.position.x=plane.position.y=0;}
+    if(axis==='x'){plane.scale.set(size[1],size[2],1);plane.rotation.y=-Math.PI/2;plane.position.copy(position(slice,0,0));plane.position.y=plane.position.z=0;}
+    arrows.children.forEach((arrow,index)=>{
+      const i=Math.round((index%12)*(dims[0]-1)/11),j=Math.round(Math.floor(index/12)*(dims[1]-1)/11);
+      const [x,y,z,ux,uy,uz]=sites[j*dims[0]+i],direction=new THREE.Vector3(ux*spacing[0],uz*spacing[2],uy*spacing[1]);
+      const speed=direction.length();arrow.visible=fluid(x+nx*(y+ny*z))&&speed>1e-12;
+      if(arrow.visible){arrow.position.copy(position(x,y,z));arrow.setDirection(direction.normalize());
+        arrow.setLength(Math.max(.002*span,Math.min(.15*span,.12*span*speed/Math.max(DATA.ranges.speed[1],1e-12))),.018*span,.009*span);}
+    });
+    if(liquid){
+      for(let c=0;c<surface.samples.length;c++)surface.samples[c]=Math.round(255*sample('fill',c));
+      surface.key=-1;surface.update(0,0);
+    }
+    el('step').textContent='t = '+time.toFixed(2);el('seek').value=time;
+    el('range').textContent=liquid?'Liquid fraction surface at 0.5':lo.toPrecision(5)+' to '+hi.toPrecision(5);
+    el('key').hidden=liquid;
+    el('description').textContent=liquid?'Surface from '+DATA.fillField+' · Drag to orbit · Scroll to zoom':
+      volume?(field==='density'?'Density relative to 1 · Blue below, amber above':'Speed volume · Brighter means faster')+' · Drag to orbit':
+      'Density and velocity fields · Drag to orbit · Scroll to zoom';
+    el('key').style.background=volume&&field==='density'?'linear-gradient(90deg,#65d1ff,#182b35,#ff9f28,#ff3812)':'';
+    canvas.dataset.time=time;canvas.dataset.field=field;canvas.dataset.mode=liquid?'surface':el('mode').value;
+  }
+  el('play').onclick=()=>{playing=!playing;el('play').textContent=playing?'Pause':'Play';};
+  el('seek').oninput=()=>{time=Number(el('seek').value);playing=false;el('play').textContent='Play';if(tracers)tracers.reset(frames[0].solid);dirty=true;};
+  for(const name of ['field','mode','opacity','plane','slice','vectors','adaptive','solids','tracers','tracerRate'])el(name).oninput=()=>{dirty=true;};
+  el('reset').onclick=()=>{theta=.65;phi=.85;zoom=1;dirty=true;};
+  canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};
+  canvas.onpointerup=canvas.onpointercancel=()=>{drag=null;};
+  canvas.onpointermove=e=>{if(drag){theta-=(e.clientX-drag[0])*.008;phi=Math.max(.06,Math.min(3.08,phi+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];dirty=true;}};
+  canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.35,Math.min(4,zoom*Math.exp(e.deltaY*.001)));dirty=true;};
+  function paint(ms){
+    let tracerDt=0;
+    const width=canvas.clientWidth,height=canvas.clientHeight;
+    if(canvas.width!==Math.round(width*renderer.getPixelRatio())||canvas.height!==Math.round(height*renderer.getPixelRatio())){
+      renderer.setSize(width,height,false);camera.aspect=width/height;camera.updateProjectionMatrix();dirty=true;
+    }
+    if(previous&&playing&&last>first){
+      tracerDt=Math.min(.1,(ms-previous)/1000)*(last-first)/10*Number(el('rate').value);
+      const next=time+tracerDt;
+      time=first+(next-first)%(last-first);
+      if(next>=last&&tracers){tracers.reset(frames[0].solid);tracerDt=0;}
+      dirty=true;
+    }
+    previous=ms;
+    if(dirty){update(tracerDt);const distance=span*zoom*Math.max(2.5,2.6/camera.aspect);
+      camera.position.set(distance*Math.sin(phi)*Math.sin(theta),distance*Math.cos(phi),distance*Math.sin(phi)*Math.cos(theta));camera.lookAt(0,0,0);
+      renderer.render(scene,camera);dirty=false;}
+    requestAnimationFrame(paint);
+  }
+  requestAnimationFrame(paint);
+}
+start().catch(error=>{el('status').hidden=false;el('status').textContent=error.message;console.error(error);});
+</script></body></html>
