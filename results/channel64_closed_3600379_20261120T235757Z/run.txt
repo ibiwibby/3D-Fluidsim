@@ -1,0 +1,14 @@
+D3Q19 BGK; double; lattice units
+channel=1
+closed_ends=1
+obstacle=1
+obstacle_radius=8
+force_x=1.2500000000000001e-06
+boundaries=bounce-back xyz walls and obstacle
+grid=64x64x64
+steps=12000
+output_every=200
+tau=1
+bump=0
+bump_width=4
+density_increase=0.10000000000000001
